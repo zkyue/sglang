@@ -1,3 +1,4 @@
+import subprocess
 import sys
 from typing import Any, Optional
 
@@ -290,6 +291,35 @@ def test_deepseek_v4_topk_transform(bs: int, c4_len: int) -> None:
         topk,
         c4_len,
     )
+
+
+# ~33k of the 65504 elements land in the threshold bin, against SMEM_INPUT_SIZE=4096.
+_OVERFLOW_CHILD = """
+import torch
+from sgl_kernel import fast_topk_v2
+
+bs, seq_len, k = 4, 65504, 2048
+torch.manual_seed(42)
+score = 10.0 + 0.1 * torch.randn(bs, seq_len, dtype=torch.float32, device="cuda")
+lengths = torch.full((bs,), seq_len, dtype=torch.int32, device="cuda")
+fast_topk_v2(score, lengths, k)
+torch.cuda.synchronize()
+"""
+
+
+@pytest.mark.skipif(
+    torch.version.hip is not None,
+    reason="ROCm sizes the candidate buffer per-arch and aborts without a message",
+)
+def test_topk_candidate_buffer_overflow_is_loud() -> None:
+    # Concentrated scores collapse the coarse histogram, so the threshold bin
+    # overflows the candidate buffer and the surplus used to be dropped silently.
+    # The device-side assert poisons the CUDA context, so this runs out of process.
+    proc = subprocess.run(
+        [sys.executable, "-c", _OVERFLOW_CHILD], capture_output=True, text=True
+    )
+    assert proc.returncode != 0, proc.stdout + proc.stderr
+    assert "threshold bin overflowed the candidate buffer" in proc.stderr, proc.stderr
 
 
 if __name__ == "__main__":

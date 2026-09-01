@@ -188,11 +188,13 @@ radix_topk(const float* __restrict__ input, int32_t* __restrict__ output, uint32
   }
 
   // stage 2: refine with 8bit radix passes
+  bool overflowed = false;
 #pragma unroll 4
   for (int round = 0; round < 4; ++round) {
     const auto r_idx = round % 2;
 
     const auto raw_num_input = s_num_input[r_idx];
+    overflowed = overflowed || (raw_num_input > SMEM_INPUT_SIZE);
     const auto num_input = raw_num_input < SMEM_INPUT_SIZE ? raw_num_input : SMEM_INPUT_SIZE;
 
     run_cumsum();
@@ -249,6 +251,9 @@ radix_topk(const float* __restrict__ input, int32_t* __restrict__ output, uint32
     }
     __syncthreads();
   }
+  // Checked after the loop, not inside it: the failure call site costs several
+  // percent on long sequences when it sits in the unrolled rounds.
+  CUDA_KERNEL_ASSERT_MSG(!overflowed, "deepseek_v4_topk: threshold bin overflowed the candidate buffer");
 }
 
 __global__ __launch_bounds__(kBlockSize) void deepseek_v4_topk_transform_kernel(const TopKParams params) {

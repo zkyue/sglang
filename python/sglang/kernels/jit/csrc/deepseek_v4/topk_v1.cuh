@@ -7,6 +7,7 @@
 #include <tvm/ffi/container/tensor.h>
 
 #include <bit>
+#include <cassert>
 #include <cstdint>
 
 namespace sglang {
@@ -168,12 +169,14 @@ radix_topk(const float* __restrict__ input, int32_t* __restrict__ output, const 
   }
 
   // stage 2: refine with 8bit radix passes
+  bool overflowed = false;
 #pragma unroll 4
   for (int round = 0; round < 4; ++round) {
     const auto r_idx = round % 2;
 
     // clip here to prevent overflow
     const auto raw_num_input = s_num_input[r_idx];
+    overflowed = overflowed || (raw_num_input > SMEM_INPUT_SIZE);
     const auto num_input = raw_num_input < SMEM_INPUT_SIZE ? raw_num_input : SMEM_INPUT_SIZE;
 
     run_cumsum();
@@ -234,6 +237,10 @@ radix_topk(const float* __restrict__ input, int32_t* __restrict__ output, const 
       __syncthreads();
     }
   }
+  // Checked after the loop, not inside it: the failure call site costs several
+  // percent on long sequences when it sits in the unrolled rounds. Always on:
+  // this JIT compiles without NDEBUG.
+  assert(!overflowed && "topk_v1: threshold bin overflowed the candidate buffer");
 }
 
 template <bool kUsePDL>

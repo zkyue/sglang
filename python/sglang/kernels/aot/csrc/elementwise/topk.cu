@@ -182,6 +182,7 @@ __device__ void fast_topk_cuda_tl(const float* __restrict__ input, int* __restri
   }
 
   // stage 2: refine with 8bit radix passes
+  bool overflowed = false;
 #pragma unroll 4
   for (int round = 0; round < 4; ++round) {
     __shared__ int s_last_remain;
@@ -189,6 +190,7 @@ __device__ void fast_topk_cuda_tl(const float* __restrict__ input, int* __restri
 
     // clip here to prevent overflow
     const auto _raw_num_input = s_num_input[r_idx];
+    overflowed = overflowed || (_raw_num_input > int(SMEM_INPUT_SIZE));
     const auto num_input = (_raw_num_input < int(SMEM_INPUT_SIZE)) ? _raw_num_input : int(SMEM_INPUT_SIZE);
 
     run_cumsum();
@@ -249,6 +251,9 @@ __device__ void fast_topk_cuda_tl(const float* __restrict__ input, int* __restri
       __syncthreads();
     }
   }
+  // Checked after the loop, not inside it: the failure call site costs several
+  // percent on long sequences when it sits in the unrolled rounds.
+  CUDA_KERNEL_ASSERT_MSG(!overflowed, "fast_topk: threshold bin overflowed the candidate buffer");
 }
 
 __global__ __launch_bounds__(kThreadsPerBlock)  // topk
